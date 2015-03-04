@@ -1,0 +1,265 @@
+/*
+ * simonControl.c
+ *
+ *  Created on: Nov 6, 2014
+ *      Author: newuser
+ */
+
+#include "simonControl.h"
+#include "stdlib.h"
+#include "supportFiles/display.h"
+#include "stdio.h"
+#include "intervalTimer.h"
+#include "flashSequence.h"
+#include "verifySequence.h"
+#include "globals.h"
+#include "string.h"
+
+//Test includes
+#include "supportFiles/utils.h"
+#include "buttonHandler.h"
+#include "simonDisplay.h"
+
+#define CONGRATS_TIMER_DURATION 1000                 // 1s
+#define NEW_LEVEL_TIMOUT_TIMER_DURATION 5000         // 5s
+#define DISPLAY_SCORE_TIMER_DURATION 5000            // 5s
+#define PAUSE_BEFORE_FLASHING_SEQUENCE_DURATION 500  // 500ms
+
+#define STARTING_LEVEL_SEQUENCE_LENGTH 3
+#define NEW_LEVEL_INCREMENT_SEQUENCE_AMOUNT 3
+
+#define TEXT_HEIGHT 8
+#define TEXT_WIDTH 6
+#define TEXT_SIZE_BIG 6
+#define TEXT_SIZE_MED 4
+#define TEXT_SIZE_SMALL 2
+
+enum simonControl_states
+	{initial_st,
+	touch_to_start_st,
+	wait_for_release_st,
+	flash_sequence_st,
+	verify_sequence_st,
+	congrats_st,
+	touch_for_new_level_st,
+	display_score_st} simonControl_state;
+
+uint16_t longestSuccessfulSequence;
+
+void generateRandomSequence(uint16_t sequenceLength)
+{
+	uint8_t sequence[50];
+	intervalTimer_stop(0);
+	srand(intervalTimer_getDurationInTicks(0));
+	for(int i = 0; i < sequenceLength; i++)
+	{
+		sequence[i] = rand() / (RAND_MAX / 4);
+	}
+	globals_setSequence(sequence, sequenceLength);
+}
+
+// Centers text at a certian height. Returns the vertical position of the next line.
+int32_t displayText(char * str, int32_t textSize, int32_t height, uint16_t color)
+{
+	display_setCursor((display_width() - TEXT_WIDTH * textSize * strlen(str)) / 2, height);
+	display_setTextColor(color);
+	display_setTextSize(textSize);
+	display_println(str);
+	return height + TEXT_HEIGHT * textSize;
+}
+
+// Centers text.
+void displayTextCentered(char * str, int32_t textSize, uint16_t color)
+{
+	displayText(str, textSize, (display_height() - TEXT_HEIGHT * textSize) / 2, color);
+}
+
+void showIntroScreen()
+{
+	display_fillScreen(DISPLAY_BLACK);
+	int32_t verticalPosition = (display_height() - TEXT_HEIGHT * (TEXT_SIZE_BIG + TEXT_SIZE_SMALL)) / 2;
+	verticalPosition = displayText("Simon", TEXT_SIZE_BIG, verticalPosition, DISPLAY_WHITE);
+	displayText("Touch to start", TEXT_SIZE_SMALL, verticalPosition, DISPLAY_WHITE);
+}
+
+void congratulateUser()
+{
+	display_fillScreen(DISPLAY_BLACK);
+	displayTextCentered("Yay!", TEXT_SIZE_MED, DISPLAY_WHITE);
+}
+
+void touchForNewLevel()
+{
+	display_fillScreen(DISPLAY_BLACK);
+	displayTextCentered("Touch for new level", TEXT_SIZE_SMALL, DISPLAY_WHITE);
+}
+
+void displayScore()
+{
+	display_fillScreen(DISPLAY_BLACK);
+	char buffer[25];
+	sprintf(buffer, "Longest Sequence: %d", longestSuccessfulSequence);
+	displayTextCentered(buffer, TEXT_SIZE_SMALL, DISPLAY_WHITE);
+}
+
+// Standard tick function.
+void simonControl_tick()
+{
+	static int32_t congratsTimer;
+	static int32_t newLevelTimoutTimer;
+	static int32_t displayScoreTimer;
+	static int32_t pauseTimer;
+
+	// Current state actions
+	switch (simonControl_state)
+	{
+	case initial_st:
+		break;
+	case touch_to_start_st:
+		break;
+	case wait_for_release_st:
+		break;
+	case flash_sequence_st:
+		break;
+	case verify_sequence_st:
+		break;
+	case congrats_st:
+		congratsTimer++;
+		break;
+	case touch_for_new_level_st:
+		newLevelTimoutTimer++;
+		break;
+	case display_score_st:
+		displayScoreTimer++;
+		break;
+	}
+
+	// State transition
+	switch (simonControl_state)
+	{
+	case initial_st:
+		intervalTimer_init(0);
+		showIntroScreen();
+		intervalTimer_reset(0);
+		intervalTimer_start(0);
+		simonControl_state = touch_to_start_st;
+		break;
+	case touch_to_start_st:
+		if(display_isTouched())
+		{
+			//Init beginning level
+			longestSuccessfulSequence = 0;
+			generateRandomSequence(STARTING_LEVEL_SEQUENCE_LENGTH);
+			globals_setSequenceIterationLength(1);
+			simonControl_state = wait_for_release_st;
+		}
+		break;
+	case wait_for_release_st:
+		if(!display_isTouched() && pauseTimer == PAUSE_BEFORE_FLASHING_SEQUENCE_DURATION)
+		{
+			printf("Released - Flashing sequence\r\n");
+			flashSequence_enable();
+			simonControl_state = flash_sequence_st;
+			printf("   Blank screen\r\n");
+			display_fillScreen(DISPLAY_BLACK);
+		}
+		break;
+	case flash_sequence_st:
+		if(flashSequence_completed())
+		{
+			printf("Verifying sequence\r\n");
+			flashSequence_disable();
+			verifySequence_enable();
+			printf("   Blank screen\r\n");
+			display_fillScreen(DISPLAY_BLACK);
+			simonDisplay_drawAllButtons();
+			simonControl_state = verify_sequence_st;
+		}
+		break;
+	case verify_sequence_st:
+		if(verifySequence_isComplete())
+		{
+			verifySequence_disable();
+			if(verifySequence_isTimeOutError() || verifySequence_isUserInputError())
+			{
+				if(verifySequence_isTimeOutError())
+				{
+					printf("Timeout error\r\n");
+				}
+				if(verifySequence_isUserInputError())
+				{
+					printf("User error\r\n");
+				}
+				displayScore();
+				displayScoreTimer = 0;
+				simonControl_state = display_score_st;
+			}
+			else if(globals_getSequenceIterationLength() == globals_getSequenceLength())
+			{
+				printf("Congrats\r\n");
+				longestSuccessfulSequence = globals_getSequenceLength();
+				congratulateUser();
+				congratsTimer = 0;
+				simonControl_state = congrats_st;
+			}
+			else
+			{
+				printf("Continue advancing sequence\r\n");
+				printf("   Blank screen\r\n");
+				display_fillScreen(DISPLAY_BLACK);
+				globals_setSequenceIterationLength(globals_getSequenceIterationLength() + 1);
+				flashSequence_enable();
+				simonControl_state = wait_for_release_st;
+			}
+		}
+		break;
+	case congrats_st:
+		if(congratsTimer == CONGRATS_TIMER_DURATION)
+		{
+			printf("Touch for new level\r\n");
+			newLevelTimoutTimer = 0;
+			simonControl_state = touch_for_new_level_st;
+			touchForNewLevel();
+		}
+		break;
+	case touch_for_new_level_st:
+		if(newLevelTimoutTimer == NEW_LEVEL_TIMOUT_TIMER_DURATION)
+		{
+			printf("Timeout - display score\r\n");
+			displayScore();
+			displayScoreTimer = 0;
+			simonControl_state = display_score_st;
+		}
+		else if(display_isTouched())
+		{
+			generateRandomSequence(globals_getSequenceLength() + NEW_LEVEL_INCREMENT_SEQUENCE_AMOUNT);
+			flashSequence_enable();
+			simonControl_state = wait_for_release_st;
+		}
+		break;
+	case display_score_st:
+		if(displayScoreTimer == DISPLAY_SCORE_TIMER_DURATION)
+		{
+			showIntroScreen();
+			intervalTimer_reset(0);
+			intervalTimer_start(0);
+			simonControl_state = touch_to_start_st;
+		}
+		break;
+	}
+}
+
+void simonControl_test()
+{
+	display_init();	// We are using the display.
+	display_fillScreen(DISPLAY_BLACK);	// Clear the display.
+
+	while(true)
+	{
+		utils_msDelay(1);
+		simonControl_tick();
+		buttonHandler_tick();
+		verifySequence_tick();
+		flashSequence_tick();
+	}
+}
